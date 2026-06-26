@@ -1,0 +1,12 @@
+[submodule "mb-roformer-mlx"]
+	path = mb-roformer-mlx
+	url = git@github.com:Da1sypetals/melband-roformer-mlx.git
+[submodule "srs-inference"]
+	path = srs-inference
+	url = git@github.com:Da1sypetals/smule-renaissance-small-mlx.git
+[submodule "game-mlx-rs"]
+	path = game-mlx-rs
+	url = git@github.com:Da1sypetals/game-mlx-rs.git
+[submodule "hallmark"]
+	path = hallmark
+	url = git@github.com:Nutlope/hallmark.git
