@@ -97,6 +97,14 @@ pub fn set_done(conn: &Connection, id: &str, outputs: &[OutputFile]) -> Result<(
     Ok(())
 }
 
+pub fn update_params(conn: &Connection, id: &str, params: &Value) -> Result<()> {
+    conn.execute(
+        "UPDATE jobs SET params = ?2, updated_at = ?3 WHERE id = ?1",
+        rusqlite::params![id, serde_json::to_string(params)?, now_ms()],
+    )?;
+    Ok(())
+}
+
 pub fn set_error(conn: &Connection, id: &str, error: &str) -> Result<()> {
     conn.execute(
         "UPDATE jobs SET status = 'error', error = ?2, updated_at = ?3 WHERE id = ?1",

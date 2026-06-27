@@ -32,7 +32,7 @@
   /* rail */
   .rail { background:var(--rail); border-right:1px solid var(--line-soft); padding:22px 14px; display:flex; flex-direction:column; gap:3px; min-height:0; }
   .brand { display:flex; align-items:center; gap:12px; padding:4px 8px 22px; }
-  .brand .mark { width:38px; height:38px; border-radius:11px; flex:none; object-fit:cover; }
+  .brand .mark { width:38px; height:38px; flex:none; object-fit:cover; }
   .brand .name { font-size:16px; font-weight:700; letter-spacing:-0.02em; }
   .brand .name i { font-style:italic; font-weight:500; color:var(--accent); }
   .rail-label { font:600 10px/1 var(--sans); text-transform:uppercase; letter-spacing:0.16em; color:var(--text-mute); padding:14px 10px 10px; }
@@ -349,31 +349,30 @@ async function submit() {
   $("outputs").innerHTML = "";
   clearStatus();
   setRunning();
-
-  // 有 activeJobId 且没有本地新文件 → 跑已有 job
-  if (activeJobId && !file) {
-    try {
-      const res = await fetch(`/api/jobs/${activeJobId}`, { method: "POST" });
-      const job = await res.json();
-      if (!res.ok) throw new Error(job.error || "failed");
-      showJobStatus(job);
-    } catch (e) {
-      setError(e.message);
-    }
-    $("run").disabled = false;
-    return;
-  }
-
-  // 新任务提交
-  if (!file) { $("run").disabled = false; return; }
   pendingSubmit = true;
-  const fd = new FormData();
-  fd.append("app", curApp.id);
-  fd.append("model", curModel.id);
-  fd.append("params", JSON.stringify(collectParams()));
-  fd.append("file", file);
+
   try {
-    const res = await fetch("/api/jobs", { method: "POST", body: fd });
+    let res;
+    if (activeJobId) {
+      // 跑已有 job，用界面上当前的参数
+      res = await fetch(`/api/jobs/${activeJobId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ params: collectParams() })
+      });
+    } else if (file) {
+      // 新任务（本地文件上传）
+      const fd = new FormData();
+      fd.append("app", curApp.id);
+      fd.append("model", curModel.id);
+      fd.append("params", JSON.stringify(collectParams()));
+      fd.append("file", file);
+      res = await fetch("/api/jobs", { method: "POST", body: fd });
+    } else {
+      $("run").disabled = false;
+      pendingSubmit = false;
+      return;
+    }
     const job = await res.json();
     if (!res.ok) throw new Error(job.error || "request failed");
     activeJobId = job.id;

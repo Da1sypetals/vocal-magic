@@ -260,14 +260,24 @@ async fn create_job(State(st): State<AppState>, mut mp: Multipart) -> Result<Jso
     }
 }
 
-// POST /api/jobs/:id — 跑这个 job
+// POST /api/jobs/:id — 跑这个 job（可选 body 里带 params 覆盖）
 async fn run_job(
     State(st): State<AppState>,
     AxumPath(id): AxumPath<String>,
+    body: axum::body::Bytes,
 ) -> Result<Json<Job>, ApiError> {
     {
         let conn = st.conn.lock().unwrap();
-        let job = db::get_job(&conn, &id)?.ok_or_else(|| anyhow::anyhow!("job not found"))?;
+        let mut job = db::get_job(&conn, &id)?.ok_or_else(|| anyhow::anyhow!("job not found"))?;
+        // 如果 body 里有 params，更新 job 的参数
+        if !body.is_empty() {
+            if let Ok(v) = serde_json::from_slice::<Value>(&body) {
+                if let Some(p) = v.get("params") {
+                    job.params = p.clone();
+                    db::update_params(&conn, &id, &job.params)?;
+                }
+            }
+        }
         let work_dir = std::path::Path::new(&job.work_dir);
         if work_dir.exists() {
             for entry in std::fs::read_dir(work_dir)? {
