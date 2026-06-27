@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="logo.png" width="128" alt="Vocal Magic" />
+  <img src="webapp/static/logo.png" width="128" alt="Vocal Magic" />
 </p>
 
 # vocal-magic
