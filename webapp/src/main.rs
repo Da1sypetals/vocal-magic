@@ -1,489 +1,376 @@
-//! A local audio workbench: a multi-app web frontend for on-device audio models.
-//!
-//! Layout mirrors a creative-tools console: the left rail lists apps, the middle
-//! column takes the input audio + per-app parameters, and the right column shows
-//! produced assets ("产物") with live status. Apps:
-//!   - "音频超分修复"   — restores degraded vocals (srs-inference / MLX)
-//!   - "歌声转 MIDI"    — transcribes singing to MIDI notes (game-mlxrs / MLX)
-//!   - "人声分离"       — separates a mix into vocal/instrumental stems (MB-RoFormer / MLX)
-
-mod jobs;
-
-use std::path::PathBuf;
-use std::sync::Arc;
+mod apps;
+mod db;
+mod events;
+mod metallib;
+mod models;
+mod storage;
+mod worker;
 
 use anyhow::Result;
-use axum::Router;
-use axum::extract::{DefaultBodyLimit, Multipart, Path as AxumPath, Query, State};
-use axum::http::{HeaderMap, StatusCode, header};
-use axum::response::{Html, IntoResponse, Response};
-use axum::routing::get;
+use axum::{
+    body::Body,
+    extract::{DefaultBodyLimit, Multipart, Path as AxumPath, State},
+    http::{header, StatusCode},
+    response::{Html, IntoResponse, Response},
+    routing::get,
+    Json, Router,
+};
 use clap::Parser;
-use serde::Serialize;
-use serde_json::{Value, json};
-use tokio::net::TcpListener;
-use tower_http::cors::CorsLayer;
+use futures::stream::Stream;
+use serde_json::{json, Value};
+use std::convert::Infallible;
+use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
+use tokio::sync::broadcast;
 
-use jobs::{Engine, JobStatus, MidiParams, ModelPaths, SubmitReq};
+use crate::db::Job;
+use crate::events::{EventTx, JobEvent};
+use crate::storage::Paths;
+use crate::worker::JobRequest;
 
-#[derive(Debug, Parser)]
-#[command(about = "Local audio workbench — on-device audio model web app")]
-struct Args {
-    /// Super-resolution checkpoint (.safetensors).
-    #[arg(long, default_value = "../smule-renaissance-small.safetensors")]
-    sr_checkpoint: PathBuf,
+#[derive(Parser, Debug)]
+#[command(
+    name = "vocal-magic-webapp",
+    about = "Voice Magic on-device audio backend"
+)]
+struct Cli {
+    /// 产物根目录
+    #[arg(long)]
+    output_dir: Option<PathBuf>,
 
-    /// GAME transcription weights (.safetensors).
-    #[arg(long, default_value = "../models/game/GAME-1.0-large.safetensors")]
-    game_weights: PathBuf,
-
-    /// GAME transcription config (config.yaml); lang_map.json must sit beside it.
-    #[arg(long, default_value = "../models/game/config.yaml")]
-    game_config: PathBuf,
-
-    /// MelBand RoFormer separation checkpoint (.safetensors).
-    #[arg(
-        long,
-        default_value = "../checkpoints/melband-roformer-tensors/melband-roformer.mlx.safetensors"
-    )]
-    separation_melband_checkpoint: PathBuf,
-
-    /// Windowed-sink MB-RoFormer separation checkpoint (.safetensors).
-    #[arg(long, default_value = "../checkpoints/mbr-win10-sink8.mlx.safetensors")]
-    separation_wsa_checkpoint: PathBuf,
-
-    /// Working directory for uploaded inputs and produced outputs.
-    #[arg(long, default_value = "./.studio")]
-    work_dir: PathBuf,
+    /// checkpoint 根目录（必填）
+    #[arg(long)]
+    checkpoints_dir: PathBuf,
 
     #[arg(long, default_value = "127.0.0.1")]
     host: String,
 
-    #[arg(long, default_value_t = 8080)]
+    #[arg(long, default_value_t = 8736)]
     port: u16,
 }
 
 #[derive(Clone)]
 struct AppState {
-    engine: Arc<Engine>,
-}
-
-struct ApiError(StatusCode, String);
-impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
-        (self.0, axum::Json(json!({ "error": self.1 }))).into_response()
-    }
-}
-impl<E: std::fmt::Display> From<E> for ApiError {
-    fn from(e: E) -> Self {
-        ApiError(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
-    }
-}
-
-async fn index() -> Html<&'static str> {
-    Html(include_str!("web/index.html"))
-}
-
-async fn health() -> &'static str {
-    "ok"
-}
-
-/// Static catalog describing the apps (left rail), their models, and every
-/// exposed parameter. The frontend renders parameter controls from this schema.
-async fn apps() -> impl IntoResponse {
-    axum::Json(json!({
-        "apps": [
-            {
-                "id": "super-resolution",
-                "name": "音频超分修复",
-                "short": "人声还原 · 高频补全",
-                "desc": "上传录音，还原受损人声、补全高频细节，输出 48kHz WAV。",
-                "icon": "sparkle",
-                "product": "audio",
-                "enabled": true,
-                "models": [ { "id": "vocal-restore-v1", "name": "smule-renaissance-small.safetensors" } ],
-                "params": [
-                    { "key": "format", "label": "输出格式", "type": "select", "default": "wav",
-                      "options": [ {"v":"wav","t":"WAV · 48kHz"} ] }
-                ]
-            },
-            {
-                "id": "transcribe-midi",
-                "name": "歌声转 MIDI",
-                "short": "人声 → 音符 / MIDI",
-                "desc": "将清唱人声转写为音符序列，导出 MIDI 与 JSON 乐谱。",
-                "icon": "notes",
-                "product": "midi",
-                "enabled": true,
-                "models": [ { "id": "game-1.0-large", "name": "GAME-1.0-large.safetensors" } ],
-                "params": [
-                    { "key": "quantize", "label": "量化到半音", "type": "toggle", "default": false },
-                    { "key": "quantize_equal_weight", "label": "量化等权重（默认时长加权）",
-                      "type": "toggle", "default": false },
-                    { "key": "language", "label": "语言代码", "type": "text", "default": "",
-                      "placeholder": "如 zh（留空自动）", "advanced": true },
-                    { "key": "t0", "label": "D3PM 起始 T", "type": "number", "default": 0.0,
-                      "min": 0.0, "max": 0.95, "step": 0.05, "advanced": true },
-                    { "key": "nsteps", "label": "D3PM 步数", "type": "number", "default": 8,
-                      "min": 1, "max": 64, "step": 1, "advanced": true },
-                    { "key": "seg_threshold", "label": "分段阈值", "type": "number", "default": 0.2,
-                      "min": 0.0, "max": 1.0, "step": 0.01, "advanced": true },
-                    { "key": "seg_radius", "label": "分段半径 (秒)", "type": "number", "default": 0.02,
-                      "min": 0.0, "max": 0.5, "step": 0.005, "advanced": true },
-                    { "key": "est_threshold", "label": "音符估计阈值", "type": "number", "default": 0.2,
-                      "min": 0.0, "max": 1.0, "step": 0.01, "advanced": true },
-                    { "key": "tempo", "label": "MIDI 速度 (BPM)", "type": "number", "default": 120,
-                      "min": 20, "max": 300, "step": 1, "advanced": true }
-                ]
-            },
-            {
-                "id": "separation", "name": "人声分离", "short": "人声 / 伴奏拆分",
-                "desc": "将混音分离为人声与伴奏轨道。", "icon": "split",
-                "product": "audio", "enabled": true,
-                "models": [
-                    { "id": "melband-roformer", "name": "melband-roformer.mlx.safetensors" },
-                    { "id": "wsa-mb-roformer-win10-sink8", "name": "mbr-win10-sink8.mlx.safetensors" }
-                ],
-                "params": []
-            }
-        ]
-    }))
-}
-
-#[derive(Serialize)]
-struct JobView {
-    id: String,
-    name: String,
-    app: String,
-    model: String,
-    model_name: String,
-    product: String,
-    status: String,
-    created_at: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    duration: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    rtf: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    note_count: Option<usize>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
-    artifacts: Vec<ArtifactView>,
-}
-
-#[derive(Serialize)]
-struct ArtifactView {
-    key: String,
-    label: String,
-    kind: String,
-}
-
-fn status_str(s: &JobStatus) -> &'static str {
-    match s {
-        JobStatus::Queued => "queued",
-        JobStatus::Processing => "processing",
-        JobStatus::Done => "done",
-        JobStatus::Failed => "failed",
-    }
-}
-
-fn view(j: &jobs::Job) -> JobView {
-    JobView {
-        id: j.id.clone(),
-        name: j.name.clone(),
-        app: j.app.clone(),
-        model: j.model.clone(),
-        model_name: j.model_name.clone(),
-        product: j.product.to_string(),
-        status: status_str(&j.status).to_string(),
-        created_at: j.created_at,
-        duration: j.duration,
-        rtf: j.rtf,
-        note_count: j.note_count,
-        error: j.error.clone(),
-        artifacts: j
-            .artifacts
-            .iter()
-            .map(|artifact| ArtifactView {
-                key: artifact.key.clone(),
-                label: artifact.label.clone(),
-                kind: artifact.kind.to_owned(),
-            })
-            .collect(),
-    }
-}
-
-fn f32_field(p: &Value, key: &str, default: f32) -> f32 {
-    p.get(key)
-        .and_then(Value::as_f64)
-        .map(|v| v as f32)
-        .unwrap_or(default)
-}
-
-async fn create_job(
-    State(state): State<AppState>,
-    mut multipart: Multipart,
-) -> Result<Response, ApiError> {
-    let mut data: Option<axum::body::Bytes> = None;
-    let mut name = "audio.wav".to_string();
-    let mut model = String::new();
-    let mut model_name = String::new();
-    let mut app = "super-resolution".to_string();
-    let mut params: Value = Value::Null;
-
-    while let Some(field) = multipart.next_field().await? {
-        match field.name().unwrap_or_default() {
-            "file" => {
-                if let Some(fname) = field.file_name() {
-                    name = fname.to_string();
-                }
-                data = Some(field.bytes().await?);
-            }
-            "app" => app = field.text().await?,
-            "model" => model = field.text().await?,
-            "model_name" => model_name = field.text().await?,
-            "params" => {
-                let txt = field.text().await?;
-                params = serde_json::from_str(&txt).unwrap_or(Value::Null);
-            }
-            _ => {
-                let _ = field.bytes().await;
-            }
-        }
-    }
-
-    let data = data.ok_or_else(|| ApiError(StatusCode::BAD_REQUEST, "未收到音频文件".into()))?;
-
-    let midi = if app == "transcribe-midi" {
-        let lang = params
-            .get("language")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .map(str::to_string);
-        Some(MidiParams {
-            t0: f32_field(&params, "t0", 0.0),
-            nsteps: params
-                .get("nsteps")
-                .and_then(Value::as_f64)
-                .map(|v| v as i32)
-                .unwrap_or(8),
-            seg_threshold: f32_field(&params, "seg_threshold", 0.2),
-            seg_radius: f32_field(&params, "seg_radius", 0.02),
-            est_threshold: f32_field(&params, "est_threshold", 0.2),
-            tempo: f32_field(&params, "tempo", 120.0),
-            language: lang,
-            quantize: params
-                .get("quantize")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-            quantize_equal_weight: params
-                .get("quantize_equal_weight")
-                .and_then(Value::as_bool)
-                .unwrap_or(false),
-        })
-    } else {
-        None
-    };
-
-    let req = SubmitReq {
-        name,
-        app,
-        model,
-        model_name,
-        midi,
-    };
-    let job = state.engine.submit(req, &data).await?;
-    Ok(axum::Json(view(&job)).into_response())
-}
-
-#[derive(serde::Deserialize)]
-struct ListQuery {
-    page: Option<usize>,
-    per_page: Option<usize>,
-}
-
-async fn list_jobs(State(state): State<AppState>, Query(q): Query<ListQuery>) -> impl IntoResponse {
-    let page = q.page.unwrap_or(1).max(1);
-    let per_page = q.per_page.unwrap_or(7).clamp(1, 100);
-    let (items, total) = state.engine.list(page, per_page);
-    let views: Vec<JobView> = items.iter().map(view).collect();
-    axum::Json(json!({ "jobs": views, "total": total, "page": page, "per_page": per_page }))
-}
-
-async fn get_job(
-    State(state): State<AppState>,
-    AxumPath(id): AxumPath<String>,
-) -> Result<Response, ApiError> {
-    let j = state
-        .engine
-        .get(&id)
-        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "任务不存在".into()))?;
-    Ok(axum::Json(view(&j)).into_response())
-}
-
-fn mime_for(path: &std::path::Path) -> &'static str {
-    match path
-        .extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("")
-        .to_lowercase()
-        .as_str()
-    {
-        "wav" => "audio/wav",
-        "mp3" => "audio/mpeg",
-        "m4a" | "aac" => "audio/mp4",
-        "flac" => "audio/flac",
-        "ogg" | "opus" => "audio/ogg",
-        "mid" | "midi" => "audio/midi",
-        "json" => "application/json",
-        _ => "application/octet-stream",
-    }
-}
-
-#[derive(serde::Deserialize)]
-struct AudioQuery {
-    which: Option<String>,
-    download: Option<u8>,
-}
-
-async fn job_audio(
-    State(state): State<AppState>,
-    AxumPath(id): AxumPath<String>,
-    Query(q): Query<AudioQuery>,
-) -> Result<Response, ApiError> {
-    let job = state
-        .engine
-        .get(&id)
-        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "任务不存在".into()))?;
-    let which = q.which.as_deref().unwrap_or("output");
-    let path = match which {
-        "input" => Some(job.input_path.clone()),
-        key => job
-            .artifacts
-            .iter()
-            .find(|artifact| artifact.kind == "audio" && artifact.key == key)
-            .map(|artifact| artifact.path.clone())
-            .or_else(|| {
-                if key == "output" {
-                    job.output_path.clone()
-                } else {
-                    None
-                }
-            }),
-    };
-    let path = path.ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "音频尚未就绪".into()))?;
-    serve_file(
-        &path,
-        q.download == Some(1),
-        &download_base_name(&job.name, which),
-    )
-    .await
-}
-
-#[derive(serde::Deserialize)]
-struct FileQuery {
-    kind: Option<String>,
-}
-
-async fn job_file(
-    State(state): State<AppState>,
-    AxumPath(id): AxumPath<String>,
-    Query(q): Query<FileQuery>,
-) -> Result<Response, ApiError> {
-    let job = state
-        .engine
-        .get(&id)
-        .ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "任务不存在".into()))?;
-    let kind = q.kind.as_deref().unwrap_or("midi");
-    let path = job
-        .artifacts
-        .iter()
-        .find(|artifact| artifact.kind == "file" && artifact.key == kind)
-        .map(|artifact| artifact.path.clone())
-        .or_else(|| match kind {
-            "json" => job.score_path.clone(),
-            "notes" => job.notes_path.clone(),
-            _ => job.output_path.clone(),
-        });
-    let path = path.ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "产物尚未就绪".into()))?;
-    serve_file(&path, true, &download_base_name(&job.name, kind)).await
-}
-
-fn download_base_name(base_name: &str, key: &str) -> String {
-    let stem = std::path::Path::new(base_name)
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("output");
-    match key {
-        "input" | "output" | "midi" | "json" => stem.to_owned(),
-        suffix => format!("{stem}_{suffix}"),
-    }
-}
-
-async fn serve_file(
-    path: &std::path::Path,
-    download: bool,
-    download_stem: &str,
-) -> Result<Response, ApiError> {
-    let bytes = tokio::fs::read(path).await?;
-    let mut headers = HeaderMap::new();
-    headers.insert(header::CONTENT_TYPE, mime_for(path).parse().unwrap());
-    if download {
-        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("bin");
-        headers.insert(
-            header::CONTENT_DISPOSITION,
-            format!("attachment; filename=\"{download_stem}.{ext}\"")
-                .parse()
-                .unwrap(),
-        );
-    }
-    Ok((headers, bytes).into_response())
+    conn: Arc<Mutex<rusqlite::Connection>>,
+    worker_tx: Arc<Mutex<std::sync::mpsc::Sender<JobRequest>>>,
+    event_tx: EventTx,
+    paths: Paths,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let args = Args::parse();
-    tokio::fs::create_dir_all(&args.work_dir).await?;
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .init();
 
-    println!("Local Audio Workbench");
-    println!("  sr checkpoint : {}", args.sr_checkpoint.display());
-    println!("  game weights  : {}", args.game_weights.display());
-    println!("  game config   : {}", args.game_config.display());
-    println!(
-        "  melband ckpt: {}",
-        args.separation_melband_checkpoint.display()
-    );
-    println!(
-        "  wsa ckpt     : {}",
-        args.separation_wsa_checkpoint.display()
-    );
-    println!("  work dir      : {}", args.work_dir.display());
-    println!("  listening     : http://{}:{}", args.host, args.port);
+    let cli = Cli::parse();
+    let output_dir = cli.output_dir.unwrap_or_else(|| {
+        dirs::home_dir()
+            .expect("cannot resolve home directory")
+            .join(".vocal-magic")
+    });
 
-    let paths = ModelPaths {
-        sr_checkpoint: args.sr_checkpoint,
-        game_weights: args.game_weights,
-        game_config: args.game_config,
-        separation_melband_checkpoint: args.separation_melband_checkpoint,
-        separation_wsa_checkpoint: args.separation_wsa_checkpoint,
+    let paths = Paths::new(output_dir, cli.checkpoints_dir);
+    paths.init()?;
+    tracing::info!("output dir: {}", paths.output_dir.display());
+    tracing::info!("checkpoints: {}", paths.checkpoints_dir.display());
+
+    metallib::ensure_mlx_metallib_colocated()?;
+
+    let api_conn = db::open(&paths.db_path)?;
+    db::fail_orphans(&api_conn)?;
+
+    let (event_tx, _) = events::channel();
+
+    let worker_conn = db::open(&paths.db_path)?;
+    let (wtx, wrx) = std::sync::mpsc::channel::<JobRequest>();
+    {
+        let worker_paths = paths.clone();
+        let worker_event_tx = event_tx.clone();
+        std::thread::Builder::new()
+            .name("inference".into())
+            .spawn(move || {
+                worker::Worker::new(worker_paths, worker_conn, wrx, worker_event_tx).run_forever()
+            })?;
+    }
+
+    let state = AppState {
+        conn: Arc::new(Mutex::new(api_conn)),
+        worker_tx: Arc::new(Mutex::new(wtx)),
+        event_tx,
+        paths: paths.clone(),
     };
-    let engine = Arc::new(Engine::new(paths, args.work_dir));
-    let state = AppState { engine };
 
     let app = Router::new()
-        .route("/", get(index))
-        .route("/api/health", get(health))
-        .route("/api/apps", get(apps))
+        .route("/api/apps", get(get_apps))
         .route("/api/jobs", get(list_jobs).post(create_job))
-        .route("/api/jobs/{id}", get(get_job))
-        .route("/api/jobs/{id}/audio", get(job_audio))
-        .route("/api/jobs/{id}/file", get(job_file))
-        .layer(DefaultBodyLimit::max(1024 * 1024 * 1024))
-        .layer(CorsLayer::permissive())
+        .route("/api/jobs/:id", get(get_job).post(run_job).delete(delete_job_handler))
+        .route("/api/jobs/:id/files/:name", get(get_file))
+        .route("/api/events", get(sse_events))
+        .route("/logo.png", get(logo_png))
+        .route("/favicon.ico", get(favicon))
+        .fallback(get(index_html))
+        .layer(DefaultBodyLimit::disable())
+        .layer(tower_http::cors::CorsLayer::permissive())
         .with_state(state);
 
-    let listener = TcpListener::bind((args.host.as_str(), args.port)).await?;
+    let addr = format!("{}:{}", cli.host, cli.port);
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    tracing::info!("listening on http://{addr}");
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+const INDEX_HTML: &str = include_str!("../static/index.html");
+const LOGO_PNG: &[u8] = include_bytes!("../static/logo.png");
+
+async fn index_html() -> Html<&'static str> {
+    Html(INDEX_HTML)
+}
+
+async fn logo_png() -> Response {
+    ([(header::CONTENT_TYPE, "image/png")], Body::from(LOGO_PNG)).into_response()
+}
+
+async fn favicon() -> Response {
+    ([(header::CONTENT_TYPE, "image/png")], Body::from(LOGO_PNG)).into_response()
+}
+
+struct ApiError(anyhow::Error);
+impl<E: Into<anyhow::Error>> From<E> for ApiError {
+    fn from(e: E) -> Self {
+        ApiError(e.into())
+    }
+}
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        let msg = format!("{:#}", self.0);
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": msg })),
+        )
+            .into_response()
+    }
+}
+
+async fn get_apps(State(st): State<AppState>) -> Json<Value> {
+    Json(apps::apps_json(&st.paths.checkpoints_dir))
+}
+
+async fn list_jobs(State(st): State<AppState>) -> Result<Json<Vec<Job>>, ApiError> {
+    let conn = st.conn.lock().unwrap();
+    let jobs = db::list_jobs(&conn)?;
+    Ok(Json(jobs))
+}
+
+async fn get_job(
+    State(st): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<Job>, ApiError> {
+    let conn = st.conn.lock().unwrap();
+    let job = db::get_job(&conn, &id)?.ok_or_else(|| anyhow::anyhow!("job not found"))?;
+    Ok(Json(job))
+}
+
+// POST /api/jobs: 同步阻塞直到推理完成，返回最终 job 状态
+async fn create_job(State(st): State<AppState>, mut mp: Multipart) -> Result<Json<Job>, ApiError> {
+    let mut app_id = String::new();
+    let mut model_id = String::new();
+    let mut params: Value = json!({});
+    let mut filename = String::from("input");
+    let mut bytes: Vec<u8> = Vec::new();
+
+    while let Some(field) = mp.next_field().await? {
+        match field.name().unwrap_or("") {
+            "app" => app_id = field.text().await?,
+            "model" => model_id = field.text().await?,
+            "params" => {
+                let txt = field.text().await?;
+                params = serde_json::from_str(&txt).unwrap_or(json!({}));
+            }
+            "file" => {
+                if let Some(fname) = field.file_name() {
+                    filename = fname.to_string();
+                }
+                bytes = field.bytes().await?.to_vec();
+            }
+            _ => {}
+        }
+    }
+
+    let app = apps::find_app(&app_id).ok_or_else(|| anyhow::anyhow!("unknown app: {app_id}"))?;
+    let model = app
+        .find_model(&model_id)
+        .ok_or_else(|| anyhow::anyhow!("unknown model: {model_id}"))?;
+    if bytes.is_empty() {
+        return Err(anyhow::anyhow!("no input file uploaded").into());
+    }
+
+    let id = uuid::Uuid::new_v4().to_string();
+    let work_dir = st.paths.work_dir(&app.id, &id);
+    let input_path = storage::create_work_dir_with_input(&work_dir, &filename, &bytes)?;
+    let input_path = storage::maybe_decode_ncm(&input_path)?;
+
+    let job = Job {
+        id: id.clone(),
+        app: app.id.clone(),
+        model: model.id.clone(),
+        status: "queued".into(),
+        created_at: db::now_ms(),
+        updated_at: db::now_ms(),
+        params,
+        input_filename: filename,
+        input_path: input_path.to_string_lossy().to_string(),
+        work_dir: work_dir.to_string_lossy().to_string(),
+        outputs: vec![],
+        error: None,
+    };
+
+    {
+        let conn = st.conn.lock().unwrap();
+        db::insert_job(&conn, &job)?;
+    }
+
+    // 广播 created 事件
+    let _ = st.event_tx.send(JobEvent::Created { job: job.clone() });
+
+    // 发送到 worker 并同步等待完成
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    st.worker_tx
+        .lock()
+        .unwrap()
+        .send(JobRequest {
+            job_id: id.clone(),
+            done: done_tx,
+        })
+        .map_err(|_| anyhow::anyhow!("worker channel closed"))?;
+
+    // 阻塞等待推理完成
+    let result = done_rx
+        .await
+        .map_err(|_| anyhow::anyhow!("worker dropped"))?;
+    match result {
+        Ok(final_job) => Ok(Json(final_job)),
+        Err(msg) => {
+            // 即使出错也返回完整 job（含 error 字段），前端可以渲染
+            let conn = st.conn.lock().unwrap();
+            let job = db::get_job(&conn, &id)?.ok_or_else(|| anyhow::anyhow!("job lost"))?;
+            Ok(Json(job))
+        }
+    }
+}
+
+// POST /api/jobs/:id — 跑这个 job
+async fn run_job(
+    State(st): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<Job>, ApiError> {
+    {
+        let conn = st.conn.lock().unwrap();
+        let job = db::get_job(&conn, &id)?.ok_or_else(|| anyhow::anyhow!("job not found"))?;
+        let work_dir = std::path::Path::new(&job.work_dir);
+        if work_dir.exists() {
+            for entry in std::fs::read_dir(work_dir)? {
+                let path = entry?.path();
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if !name.starts_with("input_") {
+                    let _ = std::fs::remove_file(&path);
+                }
+            }
+        }
+        db::set_status(&conn, &id, "queued")?;
+    }
+    {
+        let conn = st.conn.lock().unwrap();
+        if let Ok(Some(job)) = db::get_job(&conn, &id) {
+            let _ = st.event_tx.send(JobEvent::Updated { job });
+        }
+    }
+
+    let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+    st.worker_tx
+        .lock()
+        .unwrap()
+        .send(JobRequest { job_id: id.clone(), done: done_tx })
+        .map_err(|_| anyhow::anyhow!("worker channel closed"))?;
+
+    let result = done_rx.await.map_err(|_| anyhow::anyhow!("worker dropped"))?;
+    match result {
+        Ok(job) => Ok(Json(job)),
+        Err(_) => {
+            let conn = st.conn.lock().unwrap();
+            let job = db::get_job(&conn, &id)?.ok_or_else(|| anyhow::anyhow!("job lost"))?;
+            Ok(Json(job))
+        }
+    }
+}
+
+async fn delete_job_handler(
+    State(st): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+) -> Result<Json<Value>, ApiError> {
+    let work_dir = {
+        let conn = st.conn.lock().unwrap();
+        db::delete_job(&conn, &id)?
+    };
+    if let Some(wd) = work_dir {
+        let _ = std::fs::remove_dir_all(&wd);
+    }
+    let _ = st.event_tx.send(JobEvent::Deleted { id: id.clone() });
+    Ok(Json(json!({ "deleted": id })))
+}
+
+async fn get_file(
+    State(st): State<AppState>,
+    AxumPath((id, name)): AxumPath<(String, String)>,
+) -> Result<Response, ApiError> {
+    if name.contains('/') || name.contains('\\') || name == ".." {
+        return Err(anyhow::anyhow!("invalid file name").into());
+    }
+    let job = {
+        let conn = st.conn.lock().unwrap();
+        db::get_job(&conn, &id)?.ok_or_else(|| anyhow::anyhow!("job not found"))?
+    };
+    let path = std::path::Path::new(&job.work_dir).join(&name);
+    let bytes = std::fs::read(&path)?;
+    let ct = match path.extension().and_then(|e| e.to_str()) {
+        Some("wav") => "audio/wav",
+        Some("mid") => "audio/midi",
+        Some("json") => "application/json",
+        _ => "application/octet-stream",
+    };
+    Ok(([(header::CONTENT_TYPE, ct)], Body::from(bytes)).into_response())
+}
+
+// GET /api/events: SSE 端点，广播所有 job 生命周期事件
+async fn sse_events(State(st): State<AppState>) -> Response {
+    let rx = st.event_tx.subscribe();
+    let stream = make_event_stream(rx);
+    let body = Body::from_stream(stream);
+    Response::builder()
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .header("X-Accel-Buffering", "no")
+        .body(body)
+        .unwrap()
+}
+
+fn make_event_stream(
+    mut rx: broadcast::Receiver<JobEvent>,
+) -> impl Stream<Item = Result<String, Infallible>> {
+    async_stream::stream! {
+        loop {
+            match rx.recv().await {
+                Ok(event) => {
+                    let data = serde_json::to_string(&event).unwrap();
+                    yield Ok(format!("data: {data}\n\n"));
+                }
+                Err(broadcast::error::RecvError::Lagged(n)) => {
+                    tracing::warn!("SSE client lagged by {n} events");
+                    continue;
+                }
+                Err(broadcast::error::RecvError::Closed) => break,
+            }
+        }
+    }
 }

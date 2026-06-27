@@ -1,4 +1,7 @@
+.vocal-magic/
 .DS_Store
+/design
+/artifacts
 /checkpoints
 /audio
 

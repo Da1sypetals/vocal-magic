@@ -1,0 +1,524 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Voice Magic</title>
+<link rel="icon" type="image/png" href="/logo.png" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700;800&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/regular/style.css" />
+<link rel="stylesheet" href="https://unpkg.com/@phosphor-icons/web@2.1.1/src/fill/style.css" />
+<style>
+  :root {
+    color-scheme: light;
+    --bg-app: #E8E6DC; --window: #FAF9F5; --surface: #FFFFFF; --rail: #F0EEE6;
+    --stage: #FAF9F5; --hover: #F2F0E8; --sunken: #F0EEE6;
+    --line: #E4E1D6; --line-soft: #ECE9DF;
+    --text: #1F1E1C; --text-dim: #6B6760; --text-mute: #9C978B;
+    --accent: #D97757; --accent-strong: #C2613F; --accent-ink: #FFFFFF;
+    --accent-soft: rgba(217,119,87,0.12); --accent-line: rgba(217,119,87,0.42);
+    --ok: #5A9A6F; --err: #C0573F;
+    --r-card: 14px; --r-ctrl: 9px;
+    --sans: "Geist", -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+    --mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, monospace;
+    --ease: cubic-bezier(0.16,1,0.3,1);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:var(--bg-app); font-family:var(--sans); color:var(--text); -webkit-font-smoothing:antialiased; letter-spacing:-0.01em; }
+  .app { height:100dvh; display:grid; grid-template-columns:220px minmax(0,1fr) 300px; background:var(--window); }
+
+  /* rail */
+  .rail { background:var(--rail); border-right:1px solid var(--line-soft); padding:22px 14px; display:flex; flex-direction:column; gap:3px; min-height:0; }
+  .brand { display:flex; align-items:center; gap:12px; padding:4px 8px 22px; }
+  .brand .mark { width:38px; height:38px; border-radius:11px; flex:none; object-fit:cover; }
+  .brand .name { font-size:16px; font-weight:700; letter-spacing:-0.02em; }
+  .brand .name i { font-style:italic; font-weight:500; color:var(--accent); }
+  .rail-label { font:600 10px/1 var(--sans); text-transform:uppercase; letter-spacing:0.16em; color:var(--text-mute); padding:14px 10px 10px; }
+  .nav-item { display:flex; align-items:center; gap:12px; width:100%; border:1px solid transparent; background:transparent; color:var(--text-dim); text-align:left; padding:10px 11px; border-radius:var(--r-ctrl); font-size:13.5px; font-weight:500; cursor:pointer; transition:background .2s var(--ease),color .2s var(--ease),border-color .2s var(--ease); }
+  .nav-item i { font-size:18px; opacity:.8; }
+  .nav-item:hover { background:var(--hover); color:var(--text); }
+  .nav-item.active { background:var(--accent-soft); border-color:var(--accent-line); color:var(--accent-strong); }
+  .nav-item.active i { color:var(--accent); opacity:1; }
+
+  /* stage */
+  .stage { display:grid; grid-template-rows:minmax(0,1fr) auto; grid-template-columns:minmax(0,1fr); min-height:0; min-width:0; background:var(--stage); }
+  .scroll { overflow-y:auto; overflow-x:hidden; min-height:0; min-width:0; }
+  .hero { padding:32px 36px 26px; border-bottom:1px solid var(--line-soft); }
+  .hero h1 { margin:0; font-size:clamp(30px,4vw,44px); font-weight:700; line-height:1.0; letter-spacing:-0.03em; max-width:18ch; }
+  .hero h1 em { font-style:italic; font-weight:500; color:var(--accent); }
+  .hero p { margin:14px 0 0; font-size:14px; color:var(--text-dim); max-width:60ch; line-height:1.55; }
+  .stage-inner { padding:24px 36px 32px; }
+
+  .dropzone { display:flex; align-items:center; gap:16px; background:var(--surface); border:1px dashed var(--line); border-radius:var(--r-card); padding:16px; margin-bottom:26px; cursor:pointer; transition:border-color .2s var(--ease),background .2s var(--ease); }
+  .dropzone:hover { border-color:var(--accent-line); }
+  .dropzone.drag { border-color:var(--accent); background:var(--accent-soft); }
+  .dropzone .ic { width:44px; height:44px; border-radius:10px; flex:none; display:grid; place-items:center; background:var(--sunken); color:var(--accent); font-size:20px; }
+  .dropzone .fname { font-size:14px; font-weight:600; word-break:break-all; }
+  .dropzone .fsub { font:500 11.5px/1.4 var(--mono); color:var(--text-mute); margin-top:4px; }
+
+  .sec-h { font-size:13px; font-weight:600; margin:0 0 16px; }
+  .params { display:grid; grid-template-columns:1fr 1fr; gap:20px 26px; margin-bottom:6px; }
+  .field { display:flex; flex-direction:column; gap:9px; min-width:0; }
+  .field.span2 { grid-column:1/-1; }
+  .field > label { font-size:12.5px; font-weight:600; }
+  .select, .stepper, .numinput { background:var(--surface); border:1px solid var(--line); border-radius:var(--r-ctrl); color:var(--text); font-size:13.5px; height:42px; }
+  .select { width:100%; padding:0 14px; appearance:none; background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' fill='%236B6760' viewBox='0 0 256 256'%3E%3Cpath d='M213.66 101.66l-80 80a8 8 0 0 1-11.32 0l-80-80a8 8 0 0 1 11.32-11.32L128 164.69l74.34-74.35a8 8 0 0 1 11.32 11.32Z'/%3E%3C/svg%3E"); background-repeat:no-repeat; background-position:right 14px center; }
+  .numinput { width:100%; padding:0 14px; font:600 14px/1 var(--mono); }
+  .stepper { display:inline-flex; align-items:center; width:100%; overflow:hidden; }
+  .stepper button { width:42px; height:40px; border:0; cursor:pointer; background:var(--sunken); color:var(--text-dim); font-size:18px; display:grid; place-items:center; }
+  .stepper button:hover { background:var(--hover); color:var(--text); }
+  .stepper input { flex:1; min-width:0; text-align:center; border:0; background:transparent; color:var(--text); font:600 15px/1 var(--mono); }
+  .stepper .unit { color:var(--text-mute); font:500 11.5px/1 var(--mono); padding-right:14px; }
+  .modelopt-bad { color:var(--text-mute); }
+
+  .actionbar { display:flex; align-items:center; gap:16px; flex-wrap:wrap; padding:16px 36px; border-top:1px solid var(--line); background:var(--window); }
+  .btn { appearance:none; cursor:pointer; font:600 13.5px/1 var(--sans); border-radius:999px; padding:13px 24px; display:inline-flex; align-items:center; gap:10px; border:1px solid transparent; transition:transform .09s var(--ease),background .18s var(--ease),border-color .18s var(--ease); }
+  .btn:active { transform:translateY(1px); }
+  .btn-primary { background:var(--accent); color:var(--accent-ink); border-color:var(--accent-strong); box-shadow:0 8px 22px rgba(217,119,87,0.22); }
+  .btn-primary:hover { background:var(--accent-strong); }
+  .btn-primary:disabled { opacity:.5; cursor:not-allowed; box-shadow:none; }
+  .btn-ghost { background:var(--surface); color:var(--text-dim); border-color:var(--line); }
+  .btn-ghost:hover { color:var(--text); border-color:var(--text-mute); }
+  .status { margin-left:auto; display:flex; align-items:center; gap:12px; min-width:0; font:500 12px/1 var(--mono); color:var(--text-dim); }
+  .bar { width:160px; height:6px; border-radius:999px; background:var(--sunken); overflow:hidden; position:relative; }
+  .bar i { position:absolute; left:0; top:0; height:100%; width:40%; background:linear-gradient(90deg,var(--accent),var(--accent-strong)); border-radius:999px; animation:indet 1.2s var(--ease) infinite; }
+  @keyframes indet { 0%{left:-40%} 100%{left:100%} }
+  .status.done { color:var(--ok); } .status.error { color:var(--err); }
+
+  .outputs { margin-top:24px; display:flex; flex-direction:column; gap:12px; }
+  .outcard { background:var(--surface); border:1px solid var(--line); border-radius:var(--r-card); padding:14px 16px; }
+  .outcard .h { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:10px; }
+  .outcard .h .t { font-size:13px; font-weight:600; }
+  .outcard audio { width:100%; }
+  .dl { font:600 12px/1 var(--sans); color:var(--accent-strong); text-decoration:none; display:inline-flex; align-items:center; gap:6px; }
+
+  /* history */
+  .history { background:var(--rail); border-left:1px solid var(--line-soft); padding:22px 16px; overflow-y:auto; min-height:0; }
+  .history-head { display:flex; align-items:center; justify-content:space-between; padding:0 4px 16px; gap:8px; }
+  .history-head h2 { margin:0; font-size:14px; font-weight:700; letter-spacing:-0.02em; }
+  .history-head .actions { display:flex; gap:6px; }
+  .hbtn { appearance:none; border:1px solid var(--line); background:var(--surface); color:var(--text-dim); border-radius:var(--r-ctrl); font:600 11px/1 var(--sans); padding:6px 10px; cursor:pointer; transition:border-color .18s var(--ease),color .18s var(--ease); }
+  .hbtn:hover { border-color:var(--text-mute); color:var(--text); }
+  .hbtn.danger { color:var(--err); }
+  .hbtn.danger:hover { border-color:var(--err); }
+  .run .del { position:absolute; right:8px; bottom:8px; appearance:none; border:0; background:transparent; color:var(--text-mute); font-size:14px; cursor:pointer; padding:4px; border-radius:4px; opacity:0; transition:opacity .15s var(--ease),color .15s var(--ease); }
+  .run:hover .del { opacity:1; }
+  .run .del:hover { color:var(--err); }
+  .run.selmode .del { display:none; }
+  .run { position:relative; }
+  .run .chk { position:absolute; right:8px; bottom:8px; width:16px; height:16px; accent-color:var(--accent); display:none; cursor:pointer; }
+  .run.selmode .chk { display:block; }
+  .run { width:100%; text-align:left; cursor:pointer; background:var(--surface); border:1px solid var(--line); border-radius:var(--r-card); padding:12px; display:flex; gap:12px; align-items:flex-start; margin-bottom:11px; transition:border-color .18s var(--ease),transform .18s var(--ease); }
+  .run:hover { border-color:var(--text-mute); transform:translateY(-1px); }
+  .run.current { border-color:var(--accent-line); background:var(--accent-soft); }
+  .run .ic { width:30px; height:30px; border-radius:7px; flex:none; background:var(--sunken); border:1px solid var(--line); display:grid; place-items:center; color:var(--text-dim); font-size:15px; }
+  .run .title { font-size:12.5px; font-weight:600; }
+  .run .meta { font:500 11px/1.55 var(--mono); color:var(--text-mute); margin-top:3px; word-break:break-all; }
+  .run .st { font:600 9.5px/1 var(--sans); text-transform:uppercase; letter-spacing:.08em; margin-top:7px; display:inline-flex; align-items:center; gap:5px; }
+  .run .st.done{color:var(--ok)} .run .st.running{color:var(--accent-strong)} .run .st.error{color:var(--err)} .run .st.queued{color:var(--text-mute)}
+  .run .st .pip { width:6px; height:6px; border-radius:50%; background:currentColor; }
+  .history-empty { margin-top:24px; text-align:center; color:var(--text-mute); font-size:12px; line-height:1.5; }
+</style>
+</head>
+<body>
+  <main class="app">
+    <nav class="rail">
+      <div class="brand">
+        <img class="mark" src="/logo.png" alt="V" />
+        <div class="name">Voice <i>Magic</i></div>
+      </div>
+      <div class="rail-label">Algorithms</div>
+      <div id="nav"></div>
+    </nav>
+
+    <section class="stage">
+      <div class="scroll">
+        <header class="hero">
+          <h1 id="hero-title">Voice Magic</h1>
+          <p id="hero-desc"></p>
+        </header>
+        <div class="stage-inner">
+          <input type="file" id="file" accept="audio/*,.ncm" hidden />
+          <div class="dropzone" id="dropzone">
+            <div class="ic"><i class="ph ph-music-notes"></i></div>
+            <div>
+              <div class="fname" id="fname">Choose an audio file</div>
+              <div class="fsub" id="fsub">WAV, MP3, FLAC, M4A, OGG, NCM</div>
+            </div>
+          </div>
+
+          <h2 class="sec-h">Model</h2>
+          <div class="field span2" style="margin-bottom:22px">
+            <select class="select" id="model"></select>
+          </div>
+
+          <h2 class="sec-h">Parameters</h2>
+          <div class="params" id="params"></div>
+
+          <div class="outputs" id="outputs"></div>
+        </div>
+      </div>
+      <div class="actionbar">
+        <button class="btn btn-primary" id="run"><i class="ph-fill ph-play"></i> <span id="run-label">Run</span></button>
+        <button class="btn btn-ghost" id="reset"><i class="ph ph-arrow-counter-clockwise"></i> Reset</button>
+        <div class="status" id="status"></div>
+      </div>
+    </section>
+
+    <aside class="history">
+      <div class="history-head">
+        <h2>History</h2>
+        <div class="actions">
+          <button class="hbtn" id="sel-toggle" onclick="toggleSelectMode()">Select</button>
+          <button class="hbtn danger" id="sel-delete" style="display:none" onclick="deleteSelected()">Delete</button>
+        </div>
+      </div>
+      <div id="history"></div>
+    </aside>
+  </main>
+
+<script>
+const RUN_LABELS = { "source-separation":"Separate", "vocal-enhance":"Enhance", "vocal2midi":"Transcribe" };
+let APPS = [], curApp = null, curModel = null, file = null, activeJobId = null;
+// 本地 job 缓存，由 SSE 事件增量维护
+let jobs = [];
+let selectMode = false;
+let pendingSubmit = false;
+
+const $ = (id) => document.getElementById(id);
+
+async function init() {
+  const data = await fetch("/api/apps").then(r => r.json());
+  APPS = data.apps;
+  renderNav();
+  selectApp(APPS.find(a => a.id === "source-separation") || APPS[0]);
+
+  // 加载初始 history，之后由 SSE 增量维护
+  jobs = await fetch("/api/jobs").then(r => r.json());
+  renderHistory();
+  connectSSE();
+
+  $("file").addEventListener("change", e => setFile(e.target.files[0]));
+  const dz = $("dropzone");
+  dz.addEventListener("click", () => $("file").click());
+  dz.addEventListener("dragover", e => { e.preventDefault(); dz.classList.add("drag"); });
+  dz.addEventListener("dragleave", () => dz.classList.remove("drag"));
+  dz.addEventListener("drop", e => { e.preventDefault(); dz.classList.remove("drag"); if (e.dataTransfer.files[0]) setFile(e.dataTransfer.files[0]); });
+  $("model").addEventListener("change", () => { curModel = curApp.models.find(m => m.id === $("model").value); renderParams(); });
+  $("run").addEventListener("click", submit);
+  $("reset").addEventListener("click", reset);
+}
+
+// SSE: 持久连接，服务端推送 job 生命周期事件
+function connectSSE() {
+  const es = new EventSource("/api/events");
+  es.onmessage = (e) => {
+    const event = JSON.parse(e.data);
+    if (event.type === "created") {
+      jobs = [event.job, ...jobs];
+      // 如果正在提交，立即选中这个新 job
+      if (pendingSubmit) {
+        activeJobId = event.job.id;
+      }
+      renderHistory();
+    } else if (event.type === "updated") {
+      const idx = jobs.findIndex(j => j.id === event.job.id);
+      if (idx >= 0) jobs[idx] = event.job; else jobs.unshift(event.job);
+      updateHistoryItem(event.job);
+      // 如果当前正在查看这个 job，更新中间面板状态
+      if (activeJobId === event.job.id) showJobStatus(event.job);
+    } else if (event.type === "deleted") {
+      jobs = jobs.filter(j => j.id !== event.id);
+      const el = document.querySelector(`[data-job-id="${event.id}"]`);
+      if (el) el.remove();
+      if (!jobs.length) renderHistory();
+      if (activeJobId === event.id) { activeJobId = null; clearStatus(); $("outputs").innerHTML = ""; }
+    }
+  };
+  es.onerror = () => { setTimeout(() => connectSSE(), 3000); es.close(); };
+}
+
+function renderNav() {
+  $("nav").innerHTML = "";
+  for (const app of APPS) {
+    const b = document.createElement("button");
+    b.className = "nav-item" + (curApp && curApp.id === app.id ? " active" : "");
+    b.innerHTML = `<i class="ph ph-${app.icon}"></i> ${app.label}`;
+    b.onclick = () => selectApp(app);
+    b.dataset.app = app.id;
+    $("nav").appendChild(b);
+  }
+}
+
+function selectApp(app) {
+  curApp = app;
+  activeJobId = null;
+  file = null; $("file").value = "";
+  document.querySelectorAll(".nav-item").forEach(n => n.classList.toggle("active", n.dataset.app === app.id));
+  $("hero-title").textContent = app.label;
+  $("hero-desc").textContent = app.description;
+  $("run-label").textContent = RUN_LABELS[app.id] || "Run";
+  const sel = $("model");
+  sel.innerHTML = "";
+  for (const m of app.models) {
+    const o = document.createElement("option");
+    o.value = m.id;
+    o.textContent = `${m.label} - ${m.checkpoint}` + (m.available ? "" : "  (unavailable)");
+    if (!m.available) o.classList.add("modelopt-bad");
+    sel.appendChild(o);
+  }
+  curModel = app.models[0];
+  sel.value = curModel.id;
+  renderParams();
+  clearStatus();
+  $("outputs").innerHTML = "";
+  $("fname").textContent = "Choose an audio file";
+  $("fsub").textContent = "WAV, MP3, FLAC, M4A, OGG, NCM";
+  $("run").disabled = false;
+  document.querySelectorAll(".run").forEach(r => r.classList.remove("current"));
+}
+
+function renderParams() {
+  const wrap = $("params");
+  wrap.innerHTML = "";
+  for (const p of curModel.params) {
+    const f = document.createElement("div");
+    f.className = "field";
+    const label = document.createElement("label");
+    label.textContent = p.label + (p.unit ? ` (${p.unit})` : "");
+    f.appendChild(label);
+    let ctrl;
+    if (p.kind === "select") {
+      ctrl = document.createElement("select");
+      ctrl.className = "select";
+      for (const opt of p.options) {
+        const o = document.createElement("option"); o.value = opt; o.textContent = opt; ctrl.appendChild(o);
+      }
+      ctrl.value = p.default;
+    } else if (p.kind === "int") {
+      ctrl = document.createElement("div"); ctrl.className = "stepper";
+      const dec = document.createElement("button"); dec.textContent = "−";
+      const inp = document.createElement("input"); inp.value = p.default; inp.inputMode = "numeric";
+      const unit = document.createElement("span"); unit.className = "unit"; unit.textContent = p.unit || "";
+      const inc = document.createElement("button"); inc.textContent = "+";
+      const clamp = v => Math.max(p.min, Math.min(p.max, v));
+      dec.onclick = () => inp.value = clamp((+inp.value || 0) - 1);
+      inc.onclick = () => inp.value = clamp((+inp.value || 0) + 1);
+      ctrl.append(dec, inp, unit, inc);
+      ctrl._input = inp;
+    } else {
+      ctrl = document.createElement("input"); ctrl.className = "numinput"; ctrl.type = "number";
+      ctrl.value = p.default; ctrl.min = p.min; ctrl.max = p.max; ctrl.step = p.step || 0.01;
+    }
+    ctrl.dataset.key = p.key; ctrl.dataset.kind = p.kind;
+    f.appendChild(ctrl);
+    wrap.appendChild(f);
+  }
+}
+
+function collectParams() {
+  const out = {};
+  for (const f of $("params").children) {
+    const ctrl = f.querySelector("[data-key]");
+    const key = ctrl.dataset.key, kind = ctrl.dataset.kind;
+    if (kind === "int") out[key] = parseInt(ctrl._input.value, 10);
+    else if (kind === "float") out[key] = parseFloat(ctrl.value);
+    else out[key] = ctrl.value;
+  }
+  return out;
+}
+
+function setFile(f) {
+  file = f;
+  $("fname").textContent = f.name;
+  $("fsub").textContent = `${(f.size / 1048576).toFixed(1)} MB`;
+  $("run").disabled = false;
+}
+
+function clearStatus() { $("status").className = "status"; $("status").innerHTML = ""; }
+function setRunning() { $("status").className = "status"; $("status").innerHTML = `<span>running</span><span class="bar"><i></i></span>`; }
+function setDone() { $("status").className = "status done"; $("status").innerHTML = `<i class="ph-fill ph-check-circle"></i> done`; }
+function setError(msg) { $("status").className = "status error"; $("status").innerHTML = `<i class="ph-fill ph-warning-circle"></i> ${escapeHtml(msg)}`; }
+
+async function submit() {
+  if (!curModel.available) { setError(curModel.unavailable_reason || "model unavailable"); return; }
+
+  $("run").disabled = true;
+  $("outputs").innerHTML = "";
+  clearStatus();
+  setRunning();
+
+  // 有 activeJobId 且没有本地新文件 → 跑已有 job
+  if (activeJobId && !file) {
+    try {
+      const res = await fetch(`/api/jobs/${activeJobId}`, { method: "POST" });
+      const job = await res.json();
+      if (!res.ok) throw new Error(job.error || "failed");
+      showJobStatus(job);
+    } catch (e) {
+      setError(e.message);
+    }
+    $("run").disabled = false;
+    return;
+  }
+
+  // 新任务提交
+  if (!file) { $("run").disabled = false; return; }
+  pendingSubmit = true;
+  const fd = new FormData();
+  fd.append("app", curApp.id);
+  fd.append("model", curModel.id);
+  fd.append("params", JSON.stringify(collectParams()));
+  fd.append("file", file);
+  try {
+    const res = await fetch("/api/jobs", { method: "POST", body: fd });
+    const job = await res.json();
+    if (!res.ok) throw new Error(job.error || "request failed");
+    activeJobId = job.id;
+    showJobStatus(job);
+    document.querySelectorAll(".run").forEach(r => r.classList.toggle("current", r.dataset.jobId === job.id));
+  } catch (e) {
+    setError(e.message);
+  }
+  pendingSubmit = false;
+  $("run").disabled = false;
+}
+
+function showJobStatus(job) {
+  if (job.status === "done") { setDone(); renderOutputs(job); }
+  else if (job.status === "error") { setError(job.error || "failed"); }
+  else if (job.status === "running" || job.status === "queued") { setRunning(); }
+  else { clearStatus(); }
+}
+
+function renderOutputs(job) {
+  const wrap = $("outputs");
+  wrap.innerHTML = "";
+  for (const o of job.outputs) {
+    const url = `/api/jobs/${job.id}/files/${encodeURIComponent(o.name)}`;
+    const card = document.createElement("div");
+    card.className = "outcard";
+    card.innerHTML = `<div class="h"><span class="t">${o.label}</span><a class="dl" href="${url}" download="${o.name}"><i class="ph ph-download-simple"></i> ${o.name}</a></div>`;
+    if (o.kind === "audio") {
+      const a = document.createElement("audio"); a.controls = true; a.src = url; card.appendChild(a);
+    }
+    wrap.appendChild(card);
+  }
+}
+
+function reset() {
+  file = null; $("file").value = "";
+  activeJobId = null;
+  $("fname").textContent = "Choose an audio file";
+  $("fsub").textContent = "WAV, MP3, FLAC, M4A, OGG, NCM";
+  $("outputs").innerHTML = "";
+  clearStatus();
+  $("run").disabled = false;
+  document.querySelectorAll(".run").forEach(r => r.classList.remove("current"));
+}
+
+// 点 history 项：直接用本地数据（SSE 保证最新），不发请求
+function restoreJob(job) {
+  activeJobId = job.id;
+  const app = APPS.find(a => a.id === job.app);
+  if (!app) return;
+  curApp = app;
+  document.querySelectorAll(".nav-item").forEach(n => n.classList.toggle("active", n.dataset.app === app.id));
+  $("hero-title").textContent = app.label;
+  $("hero-desc").textContent = app.description;
+  $("run-label").textContent = RUN_LABELS[app.id] || "Run";
+  const sel = $("model");
+  sel.innerHTML = "";
+  for (const m of app.models) {
+    const o = document.createElement("option");
+    o.value = m.id;
+    o.textContent = `${m.label} - ${m.checkpoint}` + (m.available ? "" : "  (unavailable)");
+    sel.appendChild(o);
+  }
+  curModel = app.models.find(m => m.id === job.model) || app.models[0];
+  sel.value = curModel.id;
+  renderParams();
+  if (job.params && typeof job.params === "object") {
+    for (const f of $("params").children) {
+      const ctrl = f.querySelector("[data-key]");
+      const key = ctrl.dataset.key, kind = ctrl.dataset.kind;
+      if (key in job.params) {
+        if (kind === "int") ctrl._input.value = job.params[key];
+        else ctrl.value = job.params[key];
+      }
+    }
+  }
+  file = null; $("file").value = "";
+  $("fname").textContent = job.input_filename;
+  $("fsub").textContent = "uploaded";
+  $("outputs").innerHTML = "";
+  $("run").disabled = false;
+  showJobStatus(job);
+  document.querySelectorAll(".run").forEach(r => r.classList.toggle("current", r.dataset.jobId === job.id));
+}
+
+function toggleSelectMode() {
+  selectMode = !selectMode;
+  $("sel-toggle").textContent = selectMode ? "Cancel" : "Select";
+  $("sel-delete").style.display = selectMode ? "" : "none";
+  document.querySelectorAll(".run").forEach(r => r.classList.toggle("selmode", selectMode));
+  document.querySelectorAll(".run .chk").forEach(c => { c.style.display = selectMode ? "block" : "none"; c.checked = false; });
+}
+
+async function deleteJob(id) {
+  await fetch(`/api/jobs/${id}`, { method: "DELETE" });
+}
+
+async function deleteSelected() {
+  const checked = [...document.querySelectorAll(".run .chk:checked")].map(c => c.dataset.id);
+  if (!checked.length) return;
+  if (!confirm(`Delete ${checked.length} job(s)?`)) return;
+  await Promise.all(checked.map(id => fetch(`/api/jobs/${id}`, { method: "DELETE" })));
+  selectMode = false;
+  $("sel-toggle").textContent = "Select";
+  $("sel-delete").style.display = "none";
+}
+
+// History 渲染（全量重建，仅在结构变化时调用）
+function renderHistory() {
+  const wrap = $("history");
+  if (!jobs.length) { wrap.innerHTML = `<div class="history-empty">No runs yet. Pick a file and run an algorithm.</div>`; return; }
+  wrap.innerHTML = "";
+  for (const j of jobs) appendHistoryItem(j);
+}
+
+function appendHistoryItem(j) {
+  const wrap = $("history");
+  const app = APPS.find(a => a.id === j.app);
+  const icon = app ? app.icon : "circle";
+  const when = new Date(j.created_at).toLocaleString();
+  const b = document.createElement("button");
+  b.className = "run" + (j.id === activeJobId ? " current" : "") + (selectMode ? " selmode" : "");
+  b.dataset.jobId = j.id;
+  b.innerHTML = `<input type="checkbox" class="chk" data-id="${j.id}" style="display:${selectMode?"block":"none"}" onclick="event.stopPropagation()"/>
+    <span class="ic"><i class="ph ph-${icon}"></i></span>
+    <span><span class="title">${app ? app.label : j.app}</span>
+    <span class="meta">${escapeHtml(j.input_filename)}<br/>${when}</span>
+    <span class="st ${j.status}"><span class="pip"></span> ${j.status}</span></span>
+    <button class="del" title="Delete" onclick="event.stopPropagation();if(confirm('Delete this job?'))deleteJob('${j.id}')"><i class="ph ph-trash"></i></button>`;
+  b.onclick = () => { if (!selectMode) { const fresh = jobs.find(x => x.id === j.id) || j; restoreJob(fresh); } };
+  wrap.appendChild(b);
+}
+
+// 增量更新单个 history 条目的状态（不重建整个列表）
+function updateHistoryItem(job) {
+  const el = document.querySelector(`[data-job-id="${job.id}"]`);
+  if (!el) { renderHistory(); return; }
+  const st = el.querySelector(".st");
+  if (st) { st.className = `st ${job.status}`; st.innerHTML = `<span class="pip"></span> ${job.status}`; }
+  el.classList.toggle("current", job.id === activeJobId);
+}
+
+function escapeHtml(s) { return String(s).replace(/[&<>"]/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;" }[c])); }
+
+init();
+</script>
+</body>
+</html>

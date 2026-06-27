@@ -1,22 +1,33 @@
 [package]
-name = "webapp"
+name = "vocal-magic-webapp"
 version = "0.1.0"
-edition = "2024"
+edition = "2021"
 
 [[bin]]
-name = "webapp"
+name = "vocal-magic-webapp"
 path = "src/main.rs"
 
 [dependencies]
-srs-inference = { path = "../srs-inference" }
-game-mlxrs = { path = "game-mlx-rs" }
-mlx-rs = { git = "https://github.com/blossom-slopware/mlx-rs.git", rev = "b81194a47c2c6ba4ecb0cf370e4f0d941f52dd5d", version = "0.25.3", features = ["accelerate", "metal"] }
-anyhow = "1.0.102"
-clap = { version = "4.6.1", features = ["derive"] }
-tokio = { version = "1.45", features = ["full"] }
-axum = { version = "0.8", features = ["multipart"] }
-tower-http = { version = "0.6", features = ["cors"] }
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
-mb-roformer-mlx = { version = "0.1.0", path = "../mb-roformer-mlx" }
+axum = { version = "0.7", features = ["multipart"] }
+tokio = { version = "1", features = ["full"] }
+tower-http = { version = "0.5", features = ["fs", "cors"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.31", features = ["bundled"] }
+uuid = { version = "1", features = ["v4"] }
+anyhow = "1"
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
+dirs = "5"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
 babycat = "0.0.15"
+mlx-rs = { git = "https://github.com/blossom-slopware/mlx-rs.git", rev = "b81194a47c2c6ba4ecb0cf370e4f0d941f52dd5d", version = "0.25.3", features = ["accelerate", "metal", "safetensors"] }
+
+mb-roformer-mlx = { path = "../mb-roformer-mlx" }
+srs-inference = { path = "../srs-inference" }
+game-mlxrs = { path = "../game-mlx-rs" }
+ncmdump = "0.8.0"
+async-stream = "0.3"
+futures = "0.3"
