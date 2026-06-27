@@ -29,10 +29,7 @@ use crate::storage::Paths;
 use crate::worker::JobRequest;
 
 #[derive(Parser, Debug)]
-#[command(
-    name = "vocal-magic-webapp",
-    about = "Voice Magic on-device audio backend"
-)]
+#[command(name = "vocal-magic-webapp", about = "Vocal Magic webapp")]
 struct Cli {
     /// 产物根目录
     #[arg(long)]
@@ -104,7 +101,10 @@ async fn main() -> Result<()> {
     let app = Router::new()
         .route("/api/apps", get(get_apps))
         .route("/api/jobs", get(list_jobs).post(create_job))
-        .route("/api/jobs/:id", get(get_job).post(run_job).delete(delete_job_handler))
+        .route(
+            "/api/jobs/:id",
+            get(get_job).post(run_job).delete(delete_job_handler),
+        )
         .route("/api/jobs/:id/files/:name", get(get_file))
         .route("/api/events", get(sse_events))
         .route("/logo.png", get(logo_png))
@@ -301,10 +301,15 @@ async fn run_job(
     st.worker_tx
         .lock()
         .unwrap()
-        .send(JobRequest { job_id: id.clone(), done: done_tx })
+        .send(JobRequest {
+            job_id: id.clone(),
+            done: done_tx,
+        })
         .map_err(|_| anyhow::anyhow!("worker channel closed"))?;
 
-    let result = done_rx.await.map_err(|_| anyhow::anyhow!("worker dropped"))?;
+    let result = done_rx
+        .await
+        .map_err(|_| anyhow::anyhow!("worker dropped"))?;
     match result {
         Ok(job) => Ok(Json(job)),
         Err(_) => {
